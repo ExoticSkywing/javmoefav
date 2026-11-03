@@ -6,7 +6,30 @@ import os
 
 from fastapi import Request
 
-from . import distribution, tunnel
+from . import access, distribution, tunnel
+
+
+def configuration_client(request: Request) -> bool:
+    """允许本机管理，或显式授权的无桌面 HTTPS 反代管理。"""
+    if local_client(request):
+        return True
+    origin = os.environ.get("PEACH_CONFIG_PUBLIC_ORIGIN", "").strip().rstrip("/")
+    if (os.environ.get("PEACH_HEADLESS_MANAGED") != "1" or not origin.startswith("https://")
+            or str(request.base_url).rstrip("/") != origin):
+        return False
+    transport = request.scope.get("peach.transport_client")
+    if not transport:
+        return False
+    try:
+        peer = ipaddress.ip_address(transport[0])
+        proxies = [ipaddress.ip_address(item.strip()) for item in
+                   os.environ.get("FORWARDED_ALLOW_IPS", "").split(",") if item.strip()]
+    except ValueError:
+        return False
+    if peer not in proxies:
+        return False
+    settings = request.app.state.settings
+    return bool(settings.token) and access.load(settings.access_path)["mode"] in {"legacy", "password"}
 
 
 def managed_configuration() -> bool:

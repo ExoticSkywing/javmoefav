@@ -118,10 +118,18 @@ def _serve(args: argparse.Namespace) -> int:
         tunnel_log_root=settings_file.active().directory("logs"),
     )
     sync = _build_sync(args, settings)
+    app = create_app(settings, sync)
+    proxy_options = {}
+    if os.environ.get("PEACH_HEADLESS_MANAGED") == "1" and os.environ.get("PEACH_CONFIG_PUBLIC_ORIGIN"):
+        from .proxy_headers import ConfigurationProxyHeadersMiddleware
+        app = ConfigurationProxyHeadersMiddleware(app)
+        # 外层不得先重写 client；授权需要保留实际连接的代理地址。
+        proxy_options["proxy_headers"] = False
     uvicorn.run(
-        create_app(settings, sync), host=args.host, port=args.port, workers=1,
+        app, host=args.host, port=args.port, workers=1,
         ssl_certfile=str(args.ssl_certfile) if args.ssl_certfile else None,
         ssl_keyfile=str(args.ssl_keyfile) if args.ssl_keyfile else None,
+        **proxy_options,
     )
     return 0
 

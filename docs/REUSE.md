@@ -1,5 +1,9 @@
 # 复用清单
 
+## 无桌面 HTTPS 反代管理
+
+转发头解析继续复用已固定的 Uvicorn `ProxyHeadersMiddleware`，薄包装只在解析前保存实际连接地址。Peach 的授权规则核对显式 HTTPS origin、可信代理 IP 与已启用的登录凭据，配置接口沿用现有认证、同源校验和原子保存。默认本机边界与宿主机播放器权限独立，无新增依赖。决策见 [ADR-0133](adr/0133-headless-proxy-configuration.md)。
+
 ## 跨平台任务资源计量
 
 继续使用 psutil 7.2.2 读取进程 CPU 时间和身份。该版本的 macOS 线程列表使用序号，不能与 Python 原生线程 ID 对应；因此使用系统 `libproc` 的 `PROC_PIDTHREADID64INFO` 取得指定线程的纳秒时间，接口与单位见 [XNU 实现](https://github.com/apple-oss-distributions/xnu/blob/main/osfmk/kern/bsd_kern.c)。Linux 的可用 CPU 容量复用亲和性、控制组成员和挂载信息，按可见 cgroup v1/v2 配额归一化。

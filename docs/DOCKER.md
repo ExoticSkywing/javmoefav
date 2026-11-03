@@ -49,9 +49,36 @@ PEACH_MEDIA_ROOT=/srv/videos
 
 使用 Compose 启动后，Peach 会为全新数据卷创建配置、数据库和随机登录口令。已有配置保持原值；如果已有数据库但缺少配置文件，服务拒绝启动，需要恢复配置文件。初始化日志只显示口令文件位置。
 
-在容器终端运行 `peach token` 取得登录口令，在浏览器登录后设置访问密码。配置页要求登录，并且连接必须来自容器本机或私有网络；携带代理转发头的管理请求会被拒绝。通过配置页保存后，服务自动读取配置；勾选扫描时会启动资料处理。
+在容器终端运行 `peach token` 取得登录口令，在浏览器登录后设置访问密码。配置页默认只接受容器本机或私有网络的已登录客户端；反代管理需要按下一节显式开启。通过配置页保存后，服务自动读取配置；勾选扫描时会启动资料处理。
 
 容器内 HTTP 端口固定为 8900，访问端口在 Compose 设置。默认只发布到宿主机 `127.0.0.1`，远程访问使用私有 VPN 或 SSH 隧道。需要局域网访问时，通过 `PEACH_BIND` 绑定宿主机的局域网地址，并设置访问密码。公网托管边界见 [安全说明](../SECURITY.md)。Docker 镜像不提供多人账号或租户隔离。
+
+### 通过 HTTPS 域名管理
+
+需要直接通过反代域名管理 Docker 时，在 Compose 的 `services.peach.environment` 中加入：
+
+```yaml
+environment:
+  FORWARDED_ALLOW_IPS: "192.0.2.20"
+  PEACH_CONFIG_PUBLIC_ORIGIN: "https://media.example.com"
+```
+
+将示例值替换为前置代理实际连接 Peach 的 IP 和浏览器使用的 HTTPS 域名。`FORWARDED_ALLOW_IPS` 必须逐个列出可信代理 IP，以逗号分隔；公网配置授权不接受 `*`、主机名或网段。代理与 Peach 分开部署时，`PEACH_BIND` 要绑定代理可达的宿主机地址。
+
+NGINX 保留域名并覆盖转发协议，核心配置如下；`proxy_pass` 替换为代理可达的 Peach 地址：
+
+```nginx
+location / {
+    proxy_pass http://192.0.2.10:8900;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+}
+```
+
+重新创建容器后，在域名下登录并打开 `/configuration`，可以读取、保存配置和设置访问密码。授权同时校验真实代理连接 IP、完整 HTTPS origin 和已启用的登录凭据；写请求沿用同源校验。初始口令可用于首次登录，随后设置自己的访问密码。关闭登录凭据会禁用公网配置管理。本机播放器仍限本机使用。
+
+此能力只在 Docker 无桌面入口显式开启，默认部署不变。单人认证不提供第二因素或审计日志；具体边界见 [安全说明](../SECURITY.md)。
 
 ## 配置文件与路径
 

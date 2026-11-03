@@ -1,14 +1,14 @@
 # 安全说明
 
-Peach is a single-user, self-hosted application: one deployment serves one person, with no accounts, roles or tenant isolation. The threat model covers one thing only: other devices on the same LAN being let in by accident. Browser access is protected by an optional access password (scrypt-hashed, login attempts limited per client); scripts use an internal token under `<data root>/secrets/`, and `peach serve` refuses to start on a non-loopback address when it has no token. Source deployments serve HTTPS with a self-signed local CA (only the CA certificate is ever distributed); the standalone Windows package serves plain HTTP on the LAN. Do not expose Peach to the public internet through port forwarding or a reverse proxy: there is no audit log and no second factor. The built-in Cloudflare entry refuses to start without an access password and is meant for temporary previews. Report vulnerabilities through the repository's GitHub **Security** tab (**Private vulnerability reporting**), not a public issue. The rest of this document is in Chinese.
+Peach is a single-user, self-hosted application: one deployment serves one person, with no accounts, roles or tenant isolation. Browser access is protected by an optional access password (scrypt-hashed, login attempts limited per client); scripts use an internal token under `<data root>/secrets/`, and `peach serve` refuses to start on a non-loopback address when it has no token. Source deployments serve HTTPS with a self-signed local CA (only the CA certificate is ever distributed); the standalone Windows package serves plain HTTP on the LAN. Docker can explicitly authorize configuration through a trusted HTTPS reverse proxy, checking its transport IP, the configured public origin and enabled login credentials. There is no audit log or second factor. The built-in Cloudflare entry refuses to start without an access password and is meant for temporary previews. Report vulnerabilities through the repository's GitHub **Security** tab (**Private vulnerability reporting**), not a public issue. The rest of this document is in Chinese.
 
 ## 威胁模型
 
 Peach 是单人自托管应用：一个部署只服务一个人，没有账号体系、没有权限分级，也没有多租户隔离。
 
-Linux 无桌面部署的配置管理接受经过鉴权的回环与私有网络连接，拒绝公网、链路本地、保留地址和携带转发头的管理请求。地址分类使用 Python 标准库。容器端口默认发布到宿主机回环，部署方式见 [Docker 部署](docs/DOCKER.md)。
+Linux 无桌面部署的配置管理默认接受经过鉴权的回环与私有网络连接。设置 `PEACH_CONFIG_PUBLIC_ORIGIN` 后，还可接受指定 HTTPS 域名经 `FORWARDED_ALLOW_IPS` 中明确列出的代理 IP 转发的管理请求，实际连接来源在解释代理头前保存。通配符和网段不能授予公网配置权限，关闭登录凭据时也不开放。其他公网、链路本地、保留地址和转发请求仍被拒绝。容器端口默认发布到宿主机回环，部署方式见 [Docker 部署](docs/DOCKER.md)。
 
-能打开 Peach 的人，就能看到整个馆藏，也能做任何修改。Peach 只防一件事：同一局域网里的其他设备被无意放进来。多人共用和云端托管不在考虑范围内。
+通过认证的人能看到整个馆藏，并拥有全部修改权限。私有部署防止其他设备被无意放进来；显式开启的公网管理额外校验代理连接身份与配置域名。两种方式均不提供多人权限隔离。
 
 ## 访问密码
 
@@ -43,7 +43,7 @@ Linux 无桌面部署的配置管理接受经过鉴权的回环与私有网络�
 - 源码部署使用 HTTPS，证书由本机自签的 CA 签发，不用公开 CA。`peach init` 在 `<Peach 数据目录>/secrets/tls/` 生成 CA 与服务器证书。服务器证书有效期 397 天（Apple 对 TLS 服务器证书的上限是 398 天）；本机地址变化时 Peach 用同一个 CA 重新签发，已经信任过这个 CA 的设备不用重装。
 - 需要访问的设备只安装并信任 `peach-local-ca.crt`，任何私钥都不外发。安装与指纹核对方法见 [运行与配置](docs/OPERATIONS.md)。
 - Windows 独立测试包在局域网里使用 HTTP，传输不加密。
-- **不要用端口转发或反向代理把 Peach 直接放到公网。** Peach 没有审计日志，也没有第二道认证，这样做等于把整个馆藏和所有修改权限交出去。
+- Docker 公网管理须显式配置可信代理 IP 和 HTTPS origin，并保留登录。代理覆盖协议头、保留正确 Host；不要将任意客户端提供的转发信息当作可信来源。Peach 没有审计日志或第二因素认证。
 - 配置页的「Cloudflare 公网入口」必须先设访问密码才能启动，只适合临时预览。长期从外网访问，请用 VPN 一类的私有通道。
 - 每个响应都要求搜索引擎不收录（`X-Robots-Tag: noindex`，`/robots.txt` 禁止抓取），这一项不能关闭。
 

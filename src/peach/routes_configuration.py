@@ -2,7 +2,7 @@
 
 页面整个是 `frontend/src/react/settings/` 下的 React 子树（入口 `configuration-page.tsx`），
 挂在主站的 `/configuration` 路由里（ADR-0031）；这里只回数据。桌面由托盘管理，无桌面服务由专用入口管理；调用方范围与配置写入都在服务端校验。
-桌面部署只允许本机管理；Docker 部署还允许已登录的私有网络客户端管理。
+桌面部署只允许本机管理；Docker 部署还允许私有网络与显式授权的 HTTPS 反代客户端管理，均须登录。
 `/healthz` 的 `configurable` 只控制入口显隐；这里负责实际访问检查。
 """
 from __future__ import annotations
@@ -28,7 +28,7 @@ from . import (access, data_storage, distribution, entry_links, error_reporting,
                push_discovery, settings_file, media_configuration, tunnel, web_downloads)
 from .routes_auth import require_auth, require_authenticated_client, same_origin
 from .web_entry import runtime_fact_entries
-from .web_local_access import local_client, managed_configuration
+from .web_local_access import configuration_client, local_client, managed_configuration
 from . import release_updates, standalone_update, peach_proxy, desktop_startup, desktop_uninstall
 
 router = APIRouter()
@@ -53,7 +53,7 @@ def revision(config) -> str:
 
 
 def local_only(request: Request) -> None:
-    if not local_client(request):
+    if not configuration_client(request):
         raise HTTPException(403, "请在运行 Peach 的电脑上打开配置")
 
 
@@ -61,7 +61,7 @@ def local_only(request: Request) -> None:
 def system_diagnostics(request: Request, args: dict[str, str] = Depends(require_auth)):
     """本机诊断与 doctor JSON 共用报告；媒体来源只读后台快照。"""
     from . import diagnostics
-    if not local_client(request):
+    if not configuration_client(request):
         raise HTTPException(403, "请在运行 Peach 的电脑上打开系统诊断")
     return diagnostics.report(request.app.state.settings, request.app.state.mount_reachability.summary())
 
@@ -210,11 +210,11 @@ async def client_error(request: Request):
 
 
 def configurable(request: Request) -> bool:
-    """配置只向已配置的托盘服务的本机调用方开放；调试 serve 免掉托管那两条。"""
+    """已配置的托管服务向获准的管理客户端开放配置入口。"""
     if dev_environment():
-        return local_client(request)
+        return configuration_client(request)
     return (managed_configuration() and bool(request.app.state.settings.configured)
-            and local_client(request))
+            and configuration_client(request))
 
 
 def _read_section(result: dict, key: str, title: str, reader) -> None:

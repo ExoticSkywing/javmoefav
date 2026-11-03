@@ -12,6 +12,93 @@ from peach import server, settings_file
 from starlette.requests import Request
 
 
+class ProxyConfigurationTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        from fastapi import FastAPI
+        from peach import routes_auth, routes_configuration
+
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.config = settings_file.load_config(environ={"PEACH_DATA_ROOT": str(Path(temporary.name).resolve())})
+        settings_file.write(self.config)
+        self.enterContext(patch.dict("os.environ", {
+            "PEACH_HEADLESS_MANAGED": "1", "PEACH_CONFIG_PUBLIC_ORIGIN": "https://media.example.com",
+            "FORWARDED_ALLOW_IPS": "192.0.2.10",
+        }))
+        self.enterContext(patch.object(settings_file, "load_config", return_value=self.config))
+        self.enterContext(patch.object(settings_file, "active", return_value=self.config))
+        self.app = FastAPI()
+        self.app.state.settings = SimpleNamespace(token="test-secret", access_path=self.config.directory("secrets") / "access.json",
+                                                  configured=True)
+        self.app.state.tunnel = SimpleNamespace(snapshot=lambda: SimpleNamespace())
+        self.app.state.automatic_updates = SimpleNamespace(snapshot=lambda: {})
+        self.app.include_router(routes_auth.router)
+        self.app.include_router(routes_configuration.router)
+
+    def client(self, peer="192.0.2.10", *, wrapped=True):
+        import httpx
+        from peach.proxy_headers import ConfigurationProxyHeadersMiddleware
+
+        app = ConfigurationProxyHeadersMiddleware(self.app) if wrapped else self.app
+        return httpx.AsyncClient(transport=httpx.ASGITransport(app=app, client=(peer, 1234)),
+                                 base_url="https://media.example.com", headers={
+                                     "X-Forwarded-Proto": "https", "X-Forwarded-For": "8.8.8.8",
+                                     "Origin": "https://media.example.com", "X-Token": "test-secret",
+                                 })
+
+    async def test_trusted_proxy_can_read_and_persist_configuration_after_login(self):
+        from peach import remote_reporting
+        from peach.routes_configuration import configurable
+
+        async with self.client() as client:
+            login = await client.post("/login", data={"token": "test-secret"})
+            self.assertEqual(login.status_code, 303)
+            del client.headers["X-Token"]
+            read = await client.get("/api/configuration/automatic-updates")
+            self.assertEqual(read.status_code, 200)
+            saved = await client.post("/api/configuration/remote-reporting", json={
+                "usage": False, "errors": False,
+            })
+            self.assertEqual(saved.status_code, 200, saved.text)
+            self.assertFalse(remote_reporting.snapshot(self.config)["usage"])
+
+        request = Request({"type": "http", "client": ("8.8.8.8", 0), "server": ("0.0.0.0", 8900),
+                           "scheme": "https", "path": "/", "headers": [(b"host", b"media.example.com"),
+                           (b"x-forwarded-for", b"8.8.8.8")], "app": self.app,
+                           "peach.transport_client": ("192.0.2.10", 1234)})
+        from peach.web_local_access import local_client
+        self.assertTrue(configurable(request))
+        self.assertFalse(local_client(request), "公网配置授权不开放宿主机播放器")
+
+    async def test_management_rejects_untrusted_peer_wrong_host_http_and_missing_transport(self):
+        async with self.client("8.8.4.4") as client:
+            self.assertEqual((await client.get("/api/configuration/automatic-updates")).status_code, 403)
+        async with self.client(wrapped=False) as client:
+            self.assertEqual((await client.get("/api/configuration/automatic-updates")).status_code, 403)
+        async with self.client() as client:
+            for headers in ({"Host": "other.example.com"}, {"X-Forwarded-Proto": "http"}):
+                with self.subTest(headers=headers):
+                    self.assertEqual((await client.get("/api/configuration/automatic-updates", headers=headers)).status_code, 403)
+            for environment in ({"PEACH_CONFIG_PUBLIC_ORIGIN": ""}, {"PEACH_HEADLESS_MANAGED": "0"},
+                                {"FORWARDED_ALLOW_IPS": "*"}):
+                with self.subTest(environment=environment), patch.dict("os.environ", environment):
+                    self.assertEqual((await client.get("/api/configuration/automatic-updates")).status_code, 403)
+
+    async def test_management_keeps_authentication_and_cross_origin_rejection(self):
+        from peach import access
+
+        async with self.client() as client:
+            del client.headers["X-Token"]
+            self.assertEqual((await client.get("/api/configuration/automatic-updates")).status_code, 401)
+            client.headers["X-Token"] = "test-secret"
+            for headers in ({"Origin": "https://other.example.com"}, {"Sec-Fetch-Site": "cross-site"}):
+                with self.subTest(headers=headers):
+                    saved = await client.post("/api/configuration/remote-reporting", json={}, headers=headers)
+                    self.assertEqual(saved.status_code, 403)
+            access.save(self.app.state.settings.access_path, "")
+            self.assertEqual((await client.get("/api/configuration/automatic-updates")).status_code, 403)
+
+
 class ServerTests(unittest.TestCase):
     def test_reader_initialization_does_not_launch_a_ledger_migration(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -56,6 +143,20 @@ class ServerTests(unittest.TestCase):
                 patch("uvicorn.run"):
             self.assertEqual(cli.main(["serve", "--host", "0.0.0.0", "--no-mdns"]), 0)
         route.assert_not_called()
+
+    def test_headless_proxy_keeps_transport_peer_before_forwarded_headers(self):
+        from peach import cli
+        from peach.proxy_headers import ConfigurationProxyHeadersMiddleware
+        with patch.dict("os.environ", {"PEACH_HEADLESS_MANAGED": "1",
+                                      "PEACH_CONFIG_PUBLIC_ORIGIN": "https://media.example.com"}), \
+                patch.object(cli, "_require_readable_settings"), \
+                patch.object(cli, "_serve_token", return_value="test"), \
+                patch.object(cli, "_build_sync", return_value=None), \
+                patch.object(cli, "create_app"), patch.object(cli, "TUNNEL_ENABLED", False), \
+                patch("uvicorn.run") as run:
+            self.assertEqual(cli.main(["serve", "--host", "0.0.0.0", "--no-mdns"]), 0)
+            self.assertIsInstance(run.call_args.args[0], ConfigurationProxyHeadersMiddleware)
+            self.assertFalse(run.call_args.kwargs["proxy_headers"])
 
     def test_initialization_preserves_existing_configuration(self):
         with tempfile.TemporaryDirectory() as directory:
